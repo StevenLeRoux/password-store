@@ -108,7 +108,6 @@ reencrypt_path() {
 	local prev_gpg_recipients="" gpg_keys="" current_keys="" index passfile
 	local groups="$($GPG $PASSWORD_STORE_GPG_OPTS --list-config --with-colons | grep "^cfg:group:.*")"
 	while read -r -d "" passfile; do
-		[[ -L $passfile ]] && continue
 		local passfile_dir="${passfile%/*}"
 		passfile_dir="${passfile_dir#$PREFIX}"
 		passfile_dir="${passfile_dir#/}"
@@ -124,7 +123,7 @@ reencrypt_path() {
 				IFS=";" eval 'GPG_RECIPIENTS+=( $group )' # http://unix.stackexchange.com/a/92190
 				unset "GPG_RECIPIENTS[$index]"
 			done
-			gpg_keys="$($GPG $PASSWORD_STORE_GPG_OPTS --list-keys --with-colons "${GPG_RECIPIENTS[@]}" | sed -n 's/^sub:[^idr:]*:[^:]*:[^:]*:\([^:]*\):[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[a-zA-Z]*e[a-zA-Z]*:.*/\1/p' | LC_ALL=C sort -u)"
+			gpg_keys="$($GPG $PASSWORD_STORE_GPG_OPTS --list-keys --with-colons "${GPG_RECIPIENTS[@]}" | sed -n 's/^sub:[^:]*:[^:]*:[^:]*:\([^:]*\):[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:[a-zA-Z]*e[a-zA-Z]*:.*/\1/p' | LC_ALL=C sort -u)"
 		fi
 		current_keys="$(LC_ALL=C $GPG $PASSWORD_STORE_GPG_OPTS -v --no-secmem-warning --no-permission-warning --decrypt --list-only --keyid-format long "$passfile" 2>&1 | sed -n 's/^gpg: public key is \([A-F0-9]\+\)$/\1/p' | LC_ALL=C sort -u)"
 
@@ -152,32 +151,16 @@ check_sneaky_paths() {
 #
 
 clip() {
-	if [[ -n $WAYLAND_DISPLAY ]]; then
-		local copy_cmd=( wl-copy )
-		local paste_cmd=( wl-paste -n )
-		if [[ $X_SELECTION == primary ]]; then
-			copy_cmd+=( --primary )
-			paste_cmd+=( --primary )
-		fi
-		local display_name="$WAYLAND_DISPLAY"
-	elif [[ -n $DISPLAY ]]; then
-		local copy_cmd=( xclip -selection "$X_SELECTION" )
-		local paste_cmd=( xclip -o -selection "$X_SELECTION" )
-		local display_name="$DISPLAY"
-	else
-		die "Error: No X11 or Wayland display detected"
-	fi
-	local sleep_argv0="password store sleep on display $display_name"
-
 	# This base64 business is because bash cannot store binary data in a shell
 	# variable. Specifically, it cannot store nulls nor (non-trivally) store
 	# trailing new lines.
+	local sleep_argv0="password store sleep on display $DISPLAY"
 	pkill -f "^$sleep_argv0" 2>/dev/null && sleep 0.5
-	local before="$("${paste_cmd[@]}" 2>/dev/null | $BASE64)"
-	echo -n "$1" | "${copy_cmd[@]}" || die "Error: Could not copy data to the clipboard"
+	local before="$(xclip -o -selection "$X_SELECTION" 2>/dev/null | $BASE64)"
+	echo -n "$1" | xclip -selection "$X_SELECTION" || die "Error: Could not copy data to the clipboard"
 	(
 		( exec -a "$sleep_argv0" bash <<<"trap 'kill %1' TERM; sleep '$CLIP_TIME' & wait" )
-		local now="$("${paste_cmd[@]}" | $BASE64)"
+		local now="$(xclip -o -selection "$X_SELECTION" | $BASE64)"
 		[[ $now != $(echo -n "$1" | $BASE64) ]] && before="$now"
 
 		# It might be nice to programatically check to see if klipper exists,
@@ -189,7 +172,7 @@ clip() {
 		# so we axe it here:
 		qdbus org.kde.klipper /klipper org.kde.klipper.klipper.clearClipboardHistory &>/dev/null
 
-		echo "$before" | $BASE64 -d | "${copy_cmd[@]}"
+		echo "$before" | $BASE64 -d | xclip -selection "$X_SELECTION"
 	) >/dev/null 2>&1 & disown
 	echo "Copied $2 to clipboard. Will clear in $CLIP_TIME seconds."
 }
@@ -243,7 +226,7 @@ GETOPT="getopt"
 SHRED="shred -f -z"
 BASE64="base64"
 
-source "$(dirname "$0")/platform/$(uname | cut -d _ -f 1 | tr '[:upper:]' '[:lower:]').sh" 2>/dev/null # PLATFORM_FUNCTION_FILE
+source "/usr/local/Cellar/pass/1.7.3/lib/password-store/platform.sh"
 
 #
 # END platform definable
@@ -647,6 +630,13 @@ cmd_copy_move() {
 }
 
 cmd_git() {
+
+	while getopts p: FLAG; do
+		case $FLAG in
+			p) PREFIX=$PREFIX/$OPTARG ; INNER_GIT_DIR=$PREFIX ;;
+			\?) ;;
+	esac done
+	shift $(expr $OPTIND - 1 )
 	set_git "$PREFIX/"
 	if [[ $1 == "init" ]]; then
 		INNER_GIT_DIR="$PREFIX"
@@ -673,7 +663,7 @@ cmd_extension_or_show() {
 	fi
 }
 
-SYSTEM_EXTENSION_DIR=""
+SYSTEM_EXTENSION_DIR="/usr/local/lib/password-store/extensions"
 cmd_extension() {
 	check_sneaky_paths "$1"
 	local user_extension system_extension extension
